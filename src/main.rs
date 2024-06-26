@@ -1,4 +1,6 @@
 // Add appropriate imports here
+use text_colorizer::*;
+use std::env;
 
 
 fn main() {
@@ -10,8 +12,23 @@ fn main() {
     * These will also be tested
     * If the input are valid printout the encrypted message
      */
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.len() != 2 {
+        println!("{} Invalid input", "Error:".red().bold());
+        std::process::exit(1);
+    }
+
+    let message = &args[0];
+    let shift: i32 = match args[1].parse::<i32>() {
+        Ok(n) if (1..=26).contains(&n) => n,
+        _ => {
+            println!("{} Invalid Input", "Error:".red().bold());
+            std::process::exit(1);
+        }
+    };
     // let encrypted_message = caesar_cipher(message, shift);
     // println!("{}", encrypted_message); // Don not change this
+    
 }
 
 fn shift_alphabet(c: u8, shift: i32) -> u8 {
