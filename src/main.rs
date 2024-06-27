@@ -26,7 +26,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    
+
     let encrypted_message = caesar_cipher(message, shift);
     println!("{}", encrypted_message.green()); // Don not change this
     
@@ -68,10 +68,10 @@ fn caesar_cipher(message: &str, shift: i32) -> String {
         encrypted_bytes.push(shift_alphabet(byte, shift));
     }
 
-    let encrypted_message =String::from_utf8(encrypted_bytes);
+    
     // hint: Read https://doc.rust-lang.org/std/string/struct.String.html
     
-    encrypted_message.unwrap() // Return the encrypted message as a String
+    String::from_utf8(encrypted_bytes).expect("Invalid input") // Return the encrypted message as a String
 }
 
 // Example tests are given below
@@ -138,5 +138,4 @@ mod tests {
     fn test_shift_alphabet_a_52() {
         assert_eq!(shift_alphabet(97, 52), 97);
     }
-
 }
