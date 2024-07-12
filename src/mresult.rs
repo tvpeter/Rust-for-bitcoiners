@@ -50,3 +50,71 @@ impl<T, E> MResult<T, E> {
 }
 
 // Add unit tests below
+#[cfg(test)]
+mod test {
+
+
+    use super::*;
+
+    #[test]
+    fn test_ok(){
+       let value = 10;
+       let result: MResult<i32, &str> = MResult::ok(value);
+
+        assert_eq!(result.unwrap(), value);
+    }
+
+    #[test]
+    fn test_err(){
+        let message = "error";
+        let result: MResult<i32, &str> = MResult::err(message);
+
+        let output = match result {
+            MResult::Ok(_) => panic!("expected error variant"),
+            MResult::Err(err) => err,
+        };
+
+        assert_eq!(output, message);
+    }
+
+    #[test]
+    fn test_is_ok(){
+        let result: MResult<i32, &str> = MResult::ok(10);
+        assert!(result.is_ok());
+
+        let result_err: MResult<i32, &str> = MResult::err("error");
+        assert!(!result_err.is_ok());
+    }
+
+    #[test]
+    fn test_is_err() {
+        let result: MResult<i32, &str> = MResult::err("error");
+
+        assert!(result.is_err());
+
+        let result_ok: MResult<i32, &str> = MResult::ok(10);
+        assert!(!result_ok.is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "called `unwrap` on an `Err` value")]
+    fn test_unwrap(){
+        let value = 10;
+        let result: MResult<i32, &str> = MResult::ok(value);
+ 
+         assert_eq!(result.unwrap(), value);
+
+        let erro_result: MResult<i32, &str> = MResult::err("error here");
+        erro_result.unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "called `unwrap_err` on an `Ok` value")]
+    fn test_unwrap_err() {
+        let result: MResult<i32, &str> = MResult::err("error here");
+        assert_eq!(result.unwrap_err(), "error here");
+
+        let result: MResult<i32, &str> = MResult::ok(42);
+        result.unwrap_err(); 
+    }
+}
