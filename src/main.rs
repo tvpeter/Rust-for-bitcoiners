@@ -24,14 +24,28 @@ fn time_to_mine(block_height: u64) -> Duration {
     // when the lazy macro is expanded
     // if a value has a static lifetime then it means that value lives as long as the program lives
     let rpc_client: &Client = &*RPC_CLIENT;
-    rpc_client.get_block_hash(234);
-    todo!()
+
+    let given_block_hash = rpc_client.get_block_hash(block_height).expect("Error obtaining blockhash for given block");
+    let given_block_header = rpc_client.get_block_header(&given_block_hash).expect("error getting block header for given block");
+
+    let prev_block_hash = given_block_header.prev_blockhash;
+    let prev_block_header = rpc_client.get_block_header(&prev_block_hash).expect("error getting previous block header");
+
+    let time_diff = given_block_header.time - prev_block_header.time;
+
+    Duration::seconds(time_diff as i64)
 }
 
 // TODO: Task 2
 fn number_of_transactions(block_height: u64) -> u16 {
-    let some_value = Box::new(4 as u32);
-    todo!()
+    let rpc_client = &RPC_CLIENT;
+    // let some_value = Box::new(4 as u32);
+    let block_hash = rpc_client.get_block_hash(block_height).expect("error getting given block height");
+    let block = rpc_client.get_block(&block_hash).expect("error getting block data");
+
+    let transactions_num = block.txdata.len();
+
+    transactions_num as u16
 }
 
 fn main() {
