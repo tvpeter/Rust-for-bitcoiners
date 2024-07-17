@@ -25,6 +25,12 @@ fn time_to_mine(block_height: u64) -> Duration {
     // if a value has a static lifetime then it means that value lives as long as the program lives
     let rpc_client: &Client = &*RPC_CLIENT;
 
+    let block_count = rpc_client.get_block_count().expect("error getting block count");
+
+    if block_height > block_count {
+        panic!("Provided block height has not been mined");
+    }
+
     let given_block_hash = rpc_client.get_block_hash(block_height).expect("Error obtaining blockhash for given block");
     let given_block_header = rpc_client.get_block_header(&given_block_hash).expect("error getting block header for given block");
 
@@ -38,7 +44,13 @@ fn time_to_mine(block_height: u64) -> Duration {
 
 // TODO: Task 2
 fn number_of_transactions(block_height: u64) -> u16 {
-    let rpc_client = &RPC_CLIENT;
+    let rpc_client = &*RPC_CLIENT;
+
+    let block_count = rpc_client.get_block_count().expect("error getting block count");
+
+    if block_height > block_count {
+        panic!("Provided block height has not been mined");
+    }
     // let some_value = Box::new(4 as u32);
     let block_hash = rpc_client.get_block_hash(block_height).expect("error getting given block height");
     let block = rpc_client.get_block(&block_hash).expect("error getting block data");
@@ -71,4 +83,44 @@ fn main() {
     let res: json::GetTxOutSetInfoResult =
         rpc_client.get_tx_out_set_info(None, None, None).unwrap();
     println!("{:?}", res);
+}
+
+
+//these tests will fail without connecting to a node
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_connection(){
+        let client = &*RPC_CLIENT;
+
+        let best_block_hash = client.get_best_block_hash().unwrap();
+
+        assert!(!best_block_hash.to_string().is_empty());
+        // blockhash is 32-bytes .i.e 64 characters (sha256)
+        assert_eq!(best_block_hash.to_string().len(), 64); 
+    }
+
+    #[test]
+    fn test_time_to_mine(){
+        let time_to_mine = time_to_mine(900);
+        assert!(time_to_mine.num_seconds()>= 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_time_to_mine_failure(){
+        //set this to be above the block count
+        let time_to_mine = time_to_mine(1000);
+        time_to_mine.num_seconds();
+    }
+
+    #[test]
+    fn test_number_of_transactions(){
+
+        let num_of_txns = number_of_transactions(800);
+
+        assert!(num_of_txns >= 1);
+    }
 }
