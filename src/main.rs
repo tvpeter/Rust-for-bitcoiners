@@ -1,9 +1,28 @@
-use std::{env, time};
+use std::{env, str::FromStr, time};
 
-use bitcoincore_rpc::{Error, json, jsonrpc::{self}, Auth, Client, RpcApi};
+use bitcoincore_rpc::{bitcoin::{Address, Amount, SignedAmount, Txid}, json::{self, GetTransactionResult, WalletTxInfo}, jsonrpc::{self}, Auth, Client, Error, RpcApi};
 use chrono::Duration;
 #[macro_use]
 extern crate lazy_static;
+
+// pub enum Error {
+//         UnknownError(String),
+//         ParseError(ParseError),
+//         BitcoincoreRpcError(bitcoincore_rpc::Error),
+// }
+
+// impl fmt::Display for Error {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         use Error::*;
+
+//         match *self {
+//             BitcoincoreRpcError(e) => write!(f, "RPC error"; e),
+//             ParseError(e) => write_err!(f, "Parse error"; e),
+//             UnknownError(e) => write_err!(f, "Unknown error"; e),
+//         }
+//     }
+// }
+
 
 lazy_static! {
     static ref RPC_CLIENT: Client = {
@@ -61,6 +80,46 @@ fn number_of_transactions(block_height: u64) -> Result<u16, Error> {
 }
 
 
+fn is_segwit_address(address: &str) -> Result<bool, Error> {
+    let rpc_client = &*RPC_CLIENT;
+
+    let address = Address::from_str(address);
+
+    let derived_address =  match address {
+        Ok(address) => address,
+        Err(error) => return Err(Error::ReturnedError(error.to_string())),
+    };
+
+    // validate given address
+    let address_info = rpc_client.get_address_info(&derived_address.assume_checked())?;
+    
+   let status = address_info.is_witness.unwrap_or(false);
+
+   Ok(status)
+}
+
+fn get_wallet_balance() -> Result<Amount, Error>{
+    let rpc_client = &*RPC_CLIENT;
+
+    //loaded wallet
+    let wallet_info = rpc_client.get_wallet_info()?;
+
+    Ok(wallet_info.balance)
+}
+
+fn get_transaction_info(txid: &str) -> Result<(i32, Option<u32>, SignedAmount), Error>{
+    let rpc_client = &*RPC_CLIENT;
+
+    let txid = Txid::from_str(txid).expect("Invalid transaction id");
+
+    let trxn_info = rpc_client.get_transaction(&txid, Some(false))?;
+
+    let GetTransactionResult { info: WalletTxInfo { confirmations, blockheight, .. }, amount, .. } = trxn_info;
+
+    let result = (confirmations, blockheight, amount);
+
+    Ok(result)
+}
 
 fn main() {
     // you can use rpc_client here as if it was a global variable
@@ -124,5 +183,31 @@ mod tests {
         let num_of_txns = number_of_transactions(800).unwrap();
 
         assert!(num_of_txns >= 1);
+    }
+
+    #[test]
+    fn test_address_balance(){
+        let address = "bcrt1qdpdk6yxavaeerwuumxyy8vc9k9zr2ysvghsxug";
+
+        let is_segwit = is_segwit_address(address).unwrap();
+
+        assert!(is_segwit);
+    }
+
+    #[test]
+    fn test_get_wallet_balance(){
+        let balance = get_wallet_balance().unwrap();
+        assert!(balance.to_sat() > 0);
+    }
+
+    #[test]
+    fn test_get_transaction_info(){
+        let txid = "f965f67e86b658aae279ac01714a0aa8a78501d8d2b0463b8f298addd47ff0ba";
+
+        let txn_info = get_transaction_info(txid).unwrap();
+
+        assert!(txn_info.0 > 1);
+        assert!(txn_info.1 > Some(1));
+        assert!(txn_info.2.to_sat() > 100);
     }
 }
