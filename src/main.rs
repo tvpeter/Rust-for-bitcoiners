@@ -5,25 +5,6 @@ use chrono::Duration;
 #[macro_use]
 extern crate lazy_static;
 
-// pub enum Error {
-//         UnknownError(String),
-//         ParseError(ParseError),
-//         BitcoincoreRpcError(bitcoincore_rpc::Error),
-// }
-
-// impl fmt::Display for Error {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         use Error::*;
-
-//         match *self {
-//             BitcoincoreRpcError(e) => write!(f, "RPC error"; e),
-//             ParseError(e) => write_err!(f, "Parse error"; e),
-//             UnknownError(e) => write_err!(f, "Unknown error"; e),
-//         }
-//     }
-// }
-
-
 lazy_static! {
     static ref RPC_CLIENT: Client = {
         dotenv::dotenv().ok();
@@ -44,12 +25,6 @@ fn time_to_mine(block_height: u64) -> Result<Duration, Error> {
     // if a value has a static lifetime then it means that value lives as long as the program lives
     let rpc_client: &Client = &*RPC_CLIENT;
 
-    let block_count = rpc_client.get_block_count()?;
-
-    if block_height > block_count {
-        panic!("Provided block height has not been mined");
-    }
-
     let given_block_hash = rpc_client.get_block_hash(block_height)?;
     let given_block_header = rpc_client.get_block_header(&given_block_hash)?;
 
@@ -65,11 +40,6 @@ fn time_to_mine(block_height: u64) -> Result<Duration, Error> {
 fn number_of_transactions(block_height: u64) -> Result<u16, Error> {
     let rpc_client = &*RPC_CLIENT;
 
-    let block_count = rpc_client.get_block_count()?;
-
-    if block_height > block_count {
-        panic!("Provided block height has not been mined");
-    }
     // let some_value = Box::new(4 as u32);
     let block_hash = rpc_client.get_block_hash(block_height)?;
     let block = rpc_client.get_block(&block_hash)?;
@@ -110,7 +80,12 @@ fn get_wallet_balance() -> Result<Amount, Error>{
 fn get_transaction_info(txid: &str) -> Result<(i32, Option<u32>, SignedAmount), Error>{
     let rpc_client = &*RPC_CLIENT;
 
-    let txid = Txid::from_str(txid).expect("Invalid transaction id");
+    let txid = Txid::from_str(txid);
+
+    let txid = match txid {
+        Ok(txnid) => txnid,
+        Err(error) => return Err(Error::ReturnedError(error.to_string())),
+    };
 
     let trxn_info = rpc_client.get_transaction(&txid, Some(false))?;
 
