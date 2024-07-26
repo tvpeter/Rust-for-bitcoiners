@@ -1,4 +1,6 @@
-use std::{error::Error, fmt, fs};
+use std::{error::Error, fmt, fs, time::{ SystemTime, UNIX_EPOCH}};
+use bitcoin::{absolute::LockTime, block::{Header, Version}, hashes::Hash, Block, BlockHash, CompactTarget, Transaction, TxMerkleNode};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
@@ -71,7 +73,7 @@ struct Status {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct Transaction {
+struct BTransaction {
     txid: String,
     version: u32,
     locktime: u32,
@@ -84,15 +86,17 @@ struct Transaction {
     hex: String,
 }
 
-fn get_transactions(path: &str) -> Result<Vec<Transaction>, Box<dyn Error>> {
-    let mut transactions: Vec<Transaction> = Vec::new();
+fn get_transactions(path: &str) -> Result<Vec<BTransaction>, Box<dyn Error>> {
+    let mut transactions: Vec<BTransaction> = Vec::new();
 
+    // Check if the path is a directory
     if !Path::new(path).is_dir() {
         return Err(Box::new(TransactionError::DirectoryNotFound));
     }
 
     let directory = WalkDir::new(path);
 
+    // Iterate over the files in the directory
     for file in directory.into_iter().filter_map(|e| e.ok()) {
         if file.file_type().is_file() {
             let file_path = file.path();
@@ -101,23 +105,59 @@ fn get_transactions(path: &str) -> Result<Vec<Transaction>, Box<dyn Error>> {
             if file_path.extension().and_then(|s| s.to_str()) != Some("json") {
                 return Err(Box::new(TransactionError::InvalidFileExtension));
             }
-
+            // Read the file contents
             let content = fs::read_to_string(file_path).map_err(TransactionError::ReadFileError)?;
-            let transaction: Transaction = serde_json::from_str(&content).map_err(TransactionError::ParseJsonError)?;
+
+            // Parse the JSON content into a Transaction struct
+            let transaction: BTransaction = serde_json::from_str(&content).map_err(TransactionError::ParseJsonError)?;
             transactions.push(transaction);
         }
     }
     Ok(transactions)
 }
 
-    
+// Get the target from the target string
+fn get_target(target: &str) -> Result<CompactTarget, Box<dyn Error>> {
+    let target = CompactTarget::from_unprefixed_hex(target)?;
+    Ok(target)
+}
 
+fn time_stamp() -> Result<u32, Box<dyn Error>> {
+    let time = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    Ok(time.as_secs() as u32)
+}
+
+fn get_nonce() -> u32 {
+    let mut rng = rand::thread_rng();
+    rng.gen_range(0..u32::MAX)
+}
 
 fn main() {
 let path = "mempool";
     
     let transactions = get_transactions(path).unwrap();
 
-    
+    let version = Version::ONE;
+
+    let prev_blockhash = BlockHash::all_zeros();
+
+    let target = get_target("0000ffff00000000000000000000000000000000000000000000000000000000").unwrap();
+
+    let time = time_stamp().unwrap();
+
+    let merkle_root = TxMerkleNode::all_zeros();
+
+    let nonce = get_nonce();
+
+    let block_header = Header {
+        version,
+        prev_blockhash,
+        merkle_root,
+        time,
+        bits: target,
+        nonce,
+    };
+
+   
     
 }
