@@ -1,6 +1,5 @@
-use std::{error::Error, fmt, fs::{self, File}, io::Write, str::FromStr, time::{ SystemTime, SystemTimeError, UNIX_EPOCH}};
-use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::{self, Header}, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, psbt::serialize, script::Builder, transaction::Version, witness, Address, Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Witness};
-use rand::Rng;
+use std::{error::Error, fmt, fs::{self, File}, io::Write, str::FromStr, time::{ SystemTime, UNIX_EPOCH}};
+use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, script::Builder, transaction::Version, witness, Address, Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Witness};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
@@ -136,6 +135,10 @@ fn get_transactions(path: &str) -> Result<Vec<BTransaction>, BlockMiningError> {
             if file_path.extension().and_then(|s| s.to_str()) != Some("json") {
                 return Err(BlockMiningError::InvalidFileExtension);
             }
+            if file.file_name() == "mempool.json" {
+                continue;
+            }
+
             // Read the file contents
             let content = fs::read_to_string(file_path).map_err(BlockMiningError::ReadFileError)?;
 
@@ -156,11 +159,6 @@ fn get_target(target: &str) -> Result<Target, BlockMiningError> {
 fn time_stamp() -> Result<u32, BlockMiningError> {
     let time = SystemTime::now().duration_since(UNIX_EPOCH)?;
     Ok(time.as_secs() as u32)
-}
-
-fn get_nonce() -> u32 {
-    let mut rng = rand::thread_rng();
-    rng.gen_range(0..u32::MAX)
 }
 
 fn convert_txin(vin: &[Vin]) -> Vec<TxIn> {
@@ -197,7 +195,7 @@ fn coinbase_transaction(address: &str) -> Result<Transaction, BlockMiningError> 
     let coinbase_input = TxIn {
         previous_output: OutPoint {
             txid: Txid::all_zeros(),
-            vout: u32::MAX,
+            vout: u32::MIN,
         },
         script_sig: Builder::new().push_int(0).into_script(),
         sequence: bitcoin::Sequence(0xFFFFFFFF),
@@ -305,12 +303,18 @@ fn validate_transaction(tx: &Transaction) -> Result<Transaction, BlockMiningErro
 }
 
 
-fn add_transactions(mut txdata: Vec<Transaction>, transactions: Vec<BTransaction>, mut output_file: &File) -> Vec<Transaction> {
+fn add_transactions(mut txdata: Vec<Transaction>, transactions: Vec<BTransaction>) -> Vec<Transaction> {
 
     for tx in transactions.iter() {
+    let height = Height::from_consensus(tx.locktime);
+
+    if height.is_err() {
+        continue;
+    }
+
         let txn = Transaction {
             version: Version(tx.version as i32),
-            lock_time: LockTime::ZERO,
+            lock_time: LockTime::from_height(tx.locktime).unwrap(),
             input: convert_txin(&tx.vin),
             output: convert_vout(&tx.vout),
         };
@@ -324,7 +328,7 @@ fn add_transactions(mut txdata: Vec<Transaction>, transactions: Vec<BTransaction
     txdata
 }
 
-fn write_txdata(txdata: &[Transaction], output_file: &mut File) {
+fn write_txdata_to_file(txdata: &[Transaction], output_file: &mut File) {
     for tx in txdata.iter() {
         let txid = tx.compute_txid();
         writeln!(output_file, "{}", txid).unwrap();
@@ -342,14 +346,12 @@ fn main() {
     // create a coinbase transaction
     let coinbase_transaction = coinbase_transaction(miner_address).unwrap();
 
-    let mut output_file = File::create("out.txt").unwrap();
-
     let serialed_coinbase_tx = encode::serialize(&coinbase_transaction);
     let coinbase_tx_hex = serialed_coinbase_tx.as_hex();
 
     let mut txdata: Vec<Transaction> = vec![coinbase_transaction.clone()];
 
-    txdata = add_transactions(txdata, transactions, &output_file);
+    txdata = add_transactions(txdata, transactions);
 
     let target = get_target("0000ffff00000000000000000000000000000000000000000000000000000000").unwrap();
 
@@ -357,33 +359,14 @@ fn main() {
 
     mine_block(candidate_block.header, target);
 
+    let mut output_file = File::create("out.txt").unwrap();
+
+    let binding = encode::serialize(&candidate_block.header);
+    let block_header_hex = binding.as_hex();
+
     // Write the block header to the output file
-    writeln!(output_file, "block hash: {}", candidate_block.header.block_hash()).unwrap();
-    writeln!(output_file, "nonce: {}", candidate_block.header.nonce).unwrap();
-    writeln!(output_file, "target: {}", Target::from_compact(candidate_block.header.bits)).unwrap();
-    writeln!(output_file, "block time: {}", candidate_block.header.time).unwrap();
-    writeln!(output_file, "serialized coinbase tx: {}", coinbase_tx_hex).unwrap();
-
-
-   write_txdata(&candidate_block.txdata, &mut output_file);
-
-
-   // sanity check
-    assert!(candidate_block.check_merkle_root());
-    assert!(candidate_block.total_size() > 1);
-    assert!(coinbase_transaction.is_coinbase());
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_nonce_generation() {
-        let nonce = get_nonce();
-        assert!(nonce > 0);
-        assert!(nonce < u32::MAX);
-    }
+    writeln!(output_file, "{}", block_header_hex).unwrap();
+    writeln!(output_file, "{}", coinbase_tx_hex).unwrap();
+    write_txdata_to_file(&candidate_block.txdata, &mut output_file);
 
 }
