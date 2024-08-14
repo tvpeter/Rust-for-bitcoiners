@@ -1,5 +1,5 @@
 use std::{error::Error, fmt, fs::{self, File}, io::Write, str::FromStr, time::{ SystemTime, UNIX_EPOCH}};
-use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, script::Builder, transaction::Version, witness, Address, Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Witness};
+use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::{encode, Encodable}, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, opcodes::all::OP_PUSHBYTES_3, script::{self, Builder}, witness, Address, Amount, Block, BlockHash, OutPoint, Script, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, VarInt, Witness};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
@@ -192,14 +192,26 @@ fn convert_vout(vout: &[Vout]) -> Vec<TxOut> {
 
 fn coinbase_transaction(address: &str) -> Result<Transaction, BlockMiningError> {
 
+    let block_height = "994120".as_bytes(); //block height
+    let miner = "tvpeter".as_bytes();
+
+    let mut script_sig_bytes = Vec::new();
+    script_sig_bytes.push(block_height.len() as u8);
+    script_sig_bytes.extend(block_height);
+    script_sig_bytes.push(miner.len() as u8);
+    script_sig_bytes.extend(miner);
+
+    let script_sig = ScriptBuf::from_bytes(script_sig_bytes);
+
+    let mut witness_reserved = Witness::new();
+    let reserved = &[0; 32];
+    witness_reserved.push(reserved);
+
     let coinbase_input = TxIn {
-        previous_output: OutPoint {
-            txid: Txid::all_zeros(),
-            vout: u32::MIN,
-        },
-        script_sig: Builder::new().push_int(0).into_script(),
+        previous_output: OutPoint::null(), 
+        script_sig,
         sequence: bitcoin::Sequence(0xFFFFFFFF),
-        witness: Witness::new(),
+        witness: witness_reserved,
     };
 
     let address = Address::from_str(address).map_err(BlockMiningError::ParseError)?.assume_checked();
@@ -207,11 +219,11 @@ fn coinbase_transaction(address: &str) -> Result<Transaction, BlockMiningError> 
     let script_pubkey = address.script_pubkey();
 
     // coinbase transactions are valid after 100 blocks
-    let height = Height::from_consensus(100).map_err(|e| BlockMiningError::ConversionError)?;
+    let height = Height::from_consensus(100).map_err(|_| BlockMiningError::ConversionError)?;
     let lock_time = LockTime::Blocks(height);
     
     Ok(Transaction {
-        version: Version::ONE,
+        version: bitcoin::transaction::Version::TWO,
         lock_time, 
         input: vec![coinbase_input],
         output: vec![TxOut {
@@ -244,7 +256,7 @@ fn construct_candidate_block(txdata: Vec<Transaction>, target: Target) -> Result
     let merkle_root = TxMerkleNode::all_zeros();
 
     let block_header = Header {
-        version: bitcoin::block::Version::ONE,
+        version: bitcoin::block::Version::from_consensus(4),
         prev_blockhash,
         merkle_root,
         time,
@@ -273,7 +285,7 @@ fn validate_transaction(tx: &Transaction) -> Result<Transaction, BlockMiningErro
     let txout = tx.output.clone();
 
     // Check if the transaction is valid
-    if tx.version < Version::ONE {
+    if tx.version < bitcoin::transaction::Version::ONE {
         return Err(BlockMiningError::InvalidVersion);
     }
 
@@ -313,7 +325,7 @@ fn add_transactions(mut txdata: Vec<Transaction>, transactions: Vec<BTransaction
     }
 
         let txn = Transaction {
-            version: Version(tx.version as i32),
+            version: bitcoin::transaction::Version(tx.version as i32),
             lock_time: LockTime::from_height(tx.locktime).unwrap(),
             input: convert_txin(&tx.vin),
             output: convert_vout(&tx.vout),
@@ -330,7 +342,7 @@ fn add_transactions(mut txdata: Vec<Transaction>, transactions: Vec<BTransaction
 
 fn write_txdata_to_file(txdata: &[Transaction], output_file: &mut File) {
     for tx in txdata.iter() {
-        let txid = tx.compute_txid();
+        let txid = tx.compute_ntxid();
         writeln!(output_file, "{}", txid).unwrap();
     }
 }
