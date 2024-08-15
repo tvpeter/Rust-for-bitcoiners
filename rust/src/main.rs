@@ -1,8 +1,11 @@
 use std::{error::Error, fmt, fs::{self, File}, io::Write, str::FromStr, time::{ SystemTime, UNIX_EPOCH}};
-use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::{encode, Encodable}, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, opcodes::all::OP_PUSHBYTES_3, script::{self, Builder}, witness, Address, Amount, Block, BlockHash, OutPoint, Script, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, VarInt, Witness};
+use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, witness, Address, Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Witness};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
+
+
+const MAX_BLOCK_WEIGHT: u64 = 4_000_000; // 4 MB in weight units
 
 #[derive(Debug)]
 enum BlockMiningError {
@@ -12,7 +15,6 @@ enum BlockMiningError {
     ParseJsonError(serde_json::Error),
     SystemTimeError(std::time::SystemTimeError),
     UnprefixedHexError,
-    ConversionError,
     ParseError(ParseError),
     InvalidVersion,
     InvalidLockTime,
@@ -31,7 +33,6 @@ impl fmt::Display for BlockMiningError {
             BlockMiningError::ParseJsonError(err) => write!(f, "Error parsing JSON: {}", err),
             BlockMiningError::SystemTimeError(e) => write!(f, "SystemTimeError: {}", e),
             BlockMiningError::UnprefixedHexError => write!(f, "UnprefixedHexError"),
-            BlockMiningError::ConversionError => write!(f, "ConversionError"),
             BlockMiningError::ParseError(e) => write!(f, "ParseError: {}", e),
             BlockMiningError::InvalidVersion => write!(f, "InvalidVersion"),
             BlockMiningError::InvalidLockTime => write!(f, "InvalidLockTime"),
@@ -156,6 +157,19 @@ fn get_target(target: &str) -> Result<Target, BlockMiningError> {
     Ok(target)
 }
 
+fn get_transaction_fee(tx: &BTransaction) -> Option<u64> {
+    let mut total_input = 0;
+    let mut total_output = 0;   
+    for input in tx.vin.iter() {
+        total_input += input.prevout.value;
+    }
+    for output in tx.vout.iter() {
+        total_output += output.value;
+    }
+    Some(total_input - total_output)
+}
+
+
 fn time_stamp() -> Result<u32, BlockMiningError> {
     let time = SystemTime::now().duration_since(UNIX_EPOCH)?;
     Ok(time.as_secs() as u32)
@@ -190,7 +204,12 @@ fn convert_vout(vout: &[Vout]) -> Vec<TxOut> {
     }).collect()
 }
 
-fn coinbase_transaction(address: &str) -> Result<Transaction, BlockMiningError> {
+fn output_scriptpk(address: &str) -> ScriptBuf {
+    let address = Address::from_str(address).map_err(BlockMiningError::ParseError).unwrap().assume_checked();
+    address.script_pubkey()
+}
+
+fn coinbase_transaction(script_pubkey: ScriptBuf, total_fee: u64) -> Result<Transaction, BlockMiningError> {
 
     let block_height = "994120".as_bytes(); //block height
     let miner = "tvpeter".as_bytes();
@@ -214,22 +233,15 @@ fn coinbase_transaction(address: &str) -> Result<Transaction, BlockMiningError> 
         witness: witness_reserved,
     };
 
-    let address = Address::from_str(address).map_err(BlockMiningError::ParseError)?.assume_checked();
-
-    let script_pubkey = address.script_pubkey();
-
-    // coinbase transactions are valid after 100 blocks
-    let height = Height::from_consensus(100).map_err(|_| BlockMiningError::ConversionError)?;
-    let lock_time = LockTime::Blocks(height);
+      // add block rewards and fees to the coinbase transaction
+    let output = vec![TxOut {script_pubkey: script_pubkey.clone(),value:Amount::from_sat(3_125_000) }, 
+        TxOut { script_pubkey, value: Amount::from_sat(total_fee) }];
     
     Ok(Transaction {
         version: bitcoin::transaction::Version::TWO,
-        lock_time, 
+        lock_time: LockTime::ZERO, 
         input: vec![coinbase_input],
-        output: vec![TxOut {
-            script_pubkey,
-            value: Amount::from_sat(3_125_000),
-        }],
+        output,
     })
 }
 
@@ -315,12 +327,19 @@ fn validate_transaction(tx: &Transaction) -> Result<Transaction, BlockMiningErro
 }
 
 
-fn add_transactions(mut txdata: Vec<Transaction>, transactions: Vec<BTransaction>) -> Vec<Transaction> {
+fn select_transactions( transactions: Vec<BTransaction>) -> Vec<(Transaction, u64, f64)> {
+    let mut txdata: Vec<(Transaction, u64, f64)> = Vec::new();
 
     for tx in transactions.iter() {
     let height = Height::from_consensus(tx.locktime);
 
     if height.is_err() {
+        continue;
+    }
+
+    let fee = get_transaction_fee(tx);
+
+    if fee.is_none() {
         continue;
     }
 
@@ -331,14 +350,44 @@ fn add_transactions(mut txdata: Vec<Transaction>, transactions: Vec<BTransaction
             output: convert_vout(&tx.vout),
         };
 
+        let tx_weight = txn.weight().to_vbytes_ceil();
+        let fee = fee.unwrap();
+
+        if tx_weight > fee {
+            continue;
+        }
+        let fee_rate = fee as f64 / tx_weight as f64;
         //validate the transaction, if it is valid, add it to the block
        if validate_transaction(&txn).is_ok() {
             // add the transaction to the txdata 
-            txdata.push(txn.clone());
+            txdata.push((txn.clone(), fee, fee_rate));
         };
     }
     txdata
 }
+
+fn sort_transactions_by_fee_rate(transactions: &mut [(Transaction, u64, f64)]) {
+    transactions.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap()); // Sort by fee_rate in descending order
+}
+
+fn add_transactions(transactions: Vec<(Transaction, u64, f64)>) -> (Vec<Transaction>, u64) {
+    let mut txdata: Vec<Transaction> = Vec::new();
+    let mut total_weight = 0;
+    let mut total_fee = 0;
+    for (tx, fee, _fee_rate) in transactions.iter() {
+        total_weight += tx.weight().to_vbytes_ceil();
+        total_fee += fee;
+
+        if total_weight >= MAX_BLOCK_WEIGHT {
+            break;
+        }
+
+        txdata.push(tx.clone());
+    }
+
+    (txdata, total_fee)
+}
+
 
 fn write_txdata_to_file(txdata: &[Transaction], output_file: &mut File) {
     for tx in txdata.iter() {
@@ -354,17 +403,23 @@ fn main() {
     let transactions = get_transactions(path).unwrap();
 
     let miner_address = "bcrt1qgm4necqxnlz05a8he3cspjh63gt4vwlvsguhhg";
+    let script_pubkey = output_scriptpk(miner_address);
 
+    let mut txns_and_fees = select_transactions(transactions);
+
+    sort_transactions_by_fee_rate(&mut txns_and_fees);
     // create a coinbase transaction
-    let coinbase_transaction = coinbase_transaction(miner_address).unwrap();
+    
+    let (mut txdata, total_fee) = add_transactions(txns_and_fees);
+
+    let coinbase_transaction = coinbase_transaction(script_pubkey, total_fee).unwrap();
+
+    //add the coinbase transaction to the txdata
+    txdata.insert(0, coinbase_transaction.clone());
 
     let serialed_coinbase_tx = encode::serialize(&coinbase_transaction);
     let coinbase_tx_hex = serialed_coinbase_tx.as_hex();
-
-    let mut txdata: Vec<Transaction> = vec![coinbase_transaction.clone()];
-
-    txdata = add_transactions(txdata, transactions);
-
+    
     let target = get_target("0000ffff00000000000000000000000000000000000000000000000000000000").unwrap();
 
     let candidate_block = construct_candidate_block(txdata, target).unwrap();
