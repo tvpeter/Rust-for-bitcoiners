@@ -1,11 +1,9 @@
 use std::{error::Error, fmt, fs::{self, File}, io::Write, str::FromStr, time::{ SystemTime, UNIX_EPOCH}};
-use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, witness, Address, Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Witness};
+use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, witness, Address, Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Weight, Witness};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
 
-
-const MAX_BLOCK_WEIGHT: u64 = 4_000_000; // 4 MB in weight units
 
 #[derive(Debug)]
 enum BlockMiningError {
@@ -262,7 +260,6 @@ fn construct_candidate_block(txdata: Vec<Transaction>, target: Target) -> Result
 
     let prev_blockhash = BlockHash::all_zeros();
 
-
     let time = time_stamp()?;
 
     let merkle_root = TxMerkleNode::all_zeros();
@@ -289,7 +286,6 @@ fn construct_candidate_block(txdata: Vec<Transaction>, target: Target) -> Result
     candidate_block.header.merkle_root = merkle_root;
 
     Ok(candidate_block)
-
 }
 
 fn validate_transaction(tx: &Transaction) -> Result<Transaction, BlockMiningError> {
@@ -350,13 +346,13 @@ fn select_transactions( transactions: Vec<BTransaction>) -> Vec<(Transaction, u6
             output: convert_vout(&tx.vout),
         };
 
-        let tx_weight = txn.weight().to_vbytes_ceil();
+        let tx_weight = txn.weight();
         let fee = fee.unwrap();
 
-        if tx_weight > fee {
+        if tx_weight.to_vbytes_ceil() > fee {
             continue;
         }
-        let fee_rate = fee as f64 / tx_weight as f64;
+        let fee_rate = fee as f64 / tx_weight.to_vbytes_ceil() as f64;
         //validate the transaction, if it is valid, add it to the block
        if validate_transaction(&txn).is_ok() {
             // add the transaction to the txdata 
@@ -372,13 +368,13 @@ fn sort_transactions_by_fee_rate(transactions: &mut [(Transaction, u64, f64)]) {
 
 fn add_transactions(transactions: Vec<(Transaction, u64, f64)>) -> (Vec<Transaction>, u64) {
     let mut txdata: Vec<Transaction> = Vec::new();
-    let mut total_weight = 0;
+    let mut total_weight = Weight::ZERO;
     let mut total_fee = 0;
     for (tx, fee, _fee_rate) in transactions.iter() {
-        total_weight += tx.weight().to_vbytes_ceil();
+        total_weight += tx.weight();
         total_fee += fee;
 
-        if total_weight >= MAX_BLOCK_WEIGHT {
+        if total_weight >= Weight::MAX_BLOCK {
             break;
         }
 
@@ -391,7 +387,7 @@ fn add_transactions(transactions: Vec<(Transaction, u64, f64)>) -> (Vec<Transact
 
 fn write_txdata_to_file(txdata: &[Transaction], output_file: &mut File) {
     for tx in txdata.iter() {
-        let txid = tx.compute_ntxid();
+        let txid = tx.compute_txid();
         writeln!(output_file, "{}", txid).unwrap();
     }
 }
@@ -422,7 +418,7 @@ fn main() {
     
     let target = get_target("0000ffff00000000000000000000000000000000000000000000000000000000").unwrap();
 
-    let candidate_block = construct_candidate_block(txdata, target).unwrap();
+    let mut candidate_block = construct_candidate_block(txdata, target).unwrap();
 
     mine_block(candidate_block.header, target);
 
