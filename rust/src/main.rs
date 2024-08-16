@@ -1,5 +1,5 @@
 use std::{error::Error, fmt, fs::{self, File}, io::Write, str::FromStr, time::{ SystemTime, UNIX_EPOCH}};
-use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, witness, Address, Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Weight, Witness};
+use bitcoin::{ absolute::{Height, LockTime}, address::ParseError, block::Header, consensus::encode, error::UnprefixedHexError, hashes::Hash, hex::DisplayHex, opcodes::all::{OP_PUSHBYTES_36, OP_RETURN}, script::{self, Builder}, witness, Address, Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, Target, Transaction, TxIn, TxMerkleNode, TxOut, Txid, Weight, Witness, WitnessCommitment};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
@@ -19,7 +19,6 @@ enum BlockMiningError {
     NoInputs,
     NoOutputs,
     InvalidInput,
-    InvalidMerkleRoot,
 }
 
 impl fmt::Display for BlockMiningError {
@@ -37,7 +36,6 @@ impl fmt::Display for BlockMiningError {
             BlockMiningError::NoInputs => write!(f, "NoInputs"),
             BlockMiningError::NoOutputs => write!(f, "NoOutputs"),
             BlockMiningError::InvalidInput => write!(f, "InvalidInput"),
-            BlockMiningError::InvalidMerkleRoot => write!(f, "InvalidMerkleRoot"),
         }
     }
 }
@@ -231,9 +229,14 @@ fn coinbase_transaction(script_pubkey: ScriptBuf, total_fee: u64) -> Result<Tran
         witness: witness_reserved,
     };
 
+    // add fees to the block reward
+    let total_value = Amount::from_sat(3_125_000 + total_fee);
+
       // add block rewards and fees to the coinbase transaction
-    let output = vec![TxOut {script_pubkey: script_pubkey.clone(),value:Amount::from_sat(3_125_000) }, 
-        TxOut { script_pubkey, value: Amount::from_sat(total_fee) }];
+    let output = vec![
+        TxOut { script_pubkey: ScriptBuf::new(), value: Amount::ZERO },
+        TxOut { script_pubkey, value: total_value }
+        ];
     
     Ok(Transaction {
         version: bitcoin::transaction::Version::TWO,
@@ -273,17 +276,10 @@ fn construct_candidate_block(txdata: Vec<Transaction>, target: Target) -> Result
         nonce: 0,
     };
 
-   let mut candidate_block = Block {
+   let candidate_block = Block {
         header: block_header,
         txdata,
     };
-
-    let merkle_root = if candidate_block.compute_merkle_root().is_none() {
-        return Err(BlockMiningError::InvalidMerkleRoot);
-    } else {
-        candidate_block.compute_merkle_root().unwrap()
-    };
-    candidate_block.header.merkle_root = merkle_root;
 
     Ok(candidate_block)
 }
@@ -384,6 +380,26 @@ fn add_transactions(transactions: Vec<(Transaction, u64, f64)>) -> (Vec<Transact
     (txdata, total_fee)
 }
 
+fn get_witness_commitment(block: Block) -> ScriptBuf  {
+
+    let witness_commitment_header = [0xaa, 0x21, 0xa9, 0xed];
+
+    let witness_root = block.witness_root().unwrap();
+
+    // reserved value
+    let witness_reserved_value = [0_u8; 32].to_vec();
+
+    let witness_commitment = bitcoin::Block::compute_witness_commitment(&witness_root, &witness_reserved_value);
+
+    let mut full_commitment = [0u8; 36];  // Create a 36-byte array
+    full_commitment[..4].copy_from_slice(&witness_commitment_header); 
+    full_commitment[4..].copy_from_slice(&witness_commitment[..]);  
+
+    Builder::new()
+   .push_opcode(OP_RETURN)
+   .push_slice(full_commitment)
+   .into_script()
+}
 
 fn write_txdata_to_file(txdata: &[Transaction], output_file: &mut File) {
     for tx in txdata.iter() {
@@ -404,7 +420,6 @@ fn main() {
     let mut txns_and_fees = select_transactions(transactions);
 
     sort_transactions_by_fee_rate(&mut txns_and_fees);
-    // create a coinbase transaction
     
     let (mut txdata, total_fee) = add_transactions(txns_and_fees);
 
@@ -419,6 +434,13 @@ fn main() {
     let target = get_target("0000ffff00000000000000000000000000000000000000000000000000000000").unwrap();
 
     let mut candidate_block = construct_candidate_block(txdata, target).unwrap();
+
+    let script_pubkey = get_witness_commitment(candidate_block.clone());
+
+    candidate_block.txdata[0].output[0].script_pubkey = script_pubkey;
+
+    let merkle_root = candidate_block.compute_merkle_root().unwrap();
+    candidate_block.header.merkle_root = merkle_root;
 
     mine_block(candidate_block.header, target);
 
